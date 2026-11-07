@@ -1,17 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { GoogleGenerativeAI } from '@google/generative-ai'
-
-// Grab the comma-separated string and split it into an array
-const keys = process.env.GEMINI_API_KEYS?.split(',') || []
+import { GoogleGenAI } from '@google/genai'
 
 export async function POST(req: NextRequest) {
   try {
-    // Randomly select a key for this specific request
-    const randomKey = keys[Math.floor(Math.random() * keys.length)]
-    
-    // Initialize the SDK with the chosen key inside the request scope
-    const genAI = new GoogleGenerativeAI(randomKey)
-
     const formData = await req.formData()
     const files = formData.getAll('image').filter((value): value is File => value instanceof File)
 
@@ -19,7 +10,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No image provided' }, { status: 400 })
     }
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' })
+    const ai = new GoogleGenAI({
+      project: process.env.GOOGLE_CLOUD_PROJECT as string,
+      location: 'global',
+      vertexai: true
+    })
 
     const prompt = `
       Analyze this image of a fridge or pantry. Return a JSON array of objects representing the food items detected.
@@ -43,12 +38,15 @@ export async function POST(req: NextRequest) {
       }
     }))
 
-    const result = await model.generateContent([prompt, ...imageParts])
-
-    const responseText = result.response.text().replace(/```json/g, '').replace(/```/g, '').trim()
-    const items = JSON.parse(responseText)
-
-    return NextResponse.json({ items })
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: [prompt, ...imageParts]
+    })
+    
+    const responseText = response.text || "[]"
+    const cleanJson = responseText.replace(/```json/g, '').replace(/```/g, '').trim()
+    
+    return NextResponse.json({ items: JSON.parse(cleanJson) })
 
   } catch (error) {
     console.error('Vision API Error:', error)

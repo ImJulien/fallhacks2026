@@ -1,8 +1,17 @@
 'use client'
 
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
-import { Camera, List, ChefHat, Loader2, Upload, X, Circle, Moon, Sun } from 'lucide-react'
+import { Camera, List, ChefHat, Loader2, Upload, X, Circle, Moon, Sun, Sparkles, Trash2, Edit2, Check, Clock, Flame, Users } from 'lucide-react'
 import { useInventory, InventoryItem } from '@/store/useInventory'
+
+interface Recipe {
+  title: string
+  prepTime: string
+  cookTime: string
+  servings: string
+  ingredients: string[]
+  instructions: string[]
+}
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<'scanner' | 'inventory' | 'chef'>('scanner')
@@ -13,13 +22,19 @@ export default function Home() {
   const [previewUrls, setPreviewUrls] = useState<string[]>([])
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [detectedItems, setDetectedItems] = useState<InventoryItem[]>([])
-  const [recipe, setRecipe] = useState<string | null>(null)
   const [isCameraOpen, setIsCameraOpen] = useState(false)
-  const [isAddMoreOpen, setIsAddMoreOpen] = useState(false)
   const [cameraError, setCameraError] = useState<string | null>(null)
-  const cameraModeRef = useRef<'append' | 'replace'>('append')
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
+
+  // Recipe State
+  const [recipe, setRecipe] = useState<Recipe | null>(null)
+  const [isGeneratingRecipe, setIsGeneratingRecipe] = useState(false)
+
+  // Inventory Edit State
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editName, setEditName] = useState('')
+  const [editQuantity, setEditQuantity] = useState('')
 
   useEffect(() => {
     setIsDark(window.localStorage.getItem('sous-theme') === 'dark')
@@ -33,27 +48,21 @@ export default function Home() {
     })
   }
 
-  // Global Store
-  const items = useInventory((state) => state.items)
-  const addItem = useInventory((state) => state.addItem)
+  const { items, addItem, removeItem, updateItem } = useInventory()
 
   const handleUpload = (e: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? [])
     if (files.length > 0) {
-      setImageFiles((current) => [...current, ...files])
-      setPreviewUrls((current) => [...current, ...files.map((file) => URL.createObjectURL(file))])
+      setImageFiles(files)
+      setPreviewUrls(files.map((file) => URL.createObjectURL(file)))
       setDetectedItems([])
-      setRecipe(null)
     }
-    e.target.value = ''
-    setIsAddMoreOpen(false)
   }
 
   const addImage = (file: File) => {
     setImageFiles((current) => [...current, file])
     setPreviewUrls((current) => [...current, URL.createObjectURL(file)])
     setDetectedItems([])
-    setRecipe(null)
   }
 
   const stopCamera = () => {
@@ -62,15 +71,13 @@ export default function Home() {
     setIsCameraOpen(false)
   }
 
-  const openCamera = async (mode: 'append' | 'replace' = 'append') => {
-    cameraModeRef.current = mode
+  const openCamera = async () => {
     setCameraError(null)
     if (!navigator.mediaDevices?.getUserMedia) {
       setCameraError('Camera access is not available in this browser.')
       setIsCameraOpen(true)
       return
     }
-
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: 'environment' } },
@@ -105,27 +112,50 @@ export default function Home() {
     canvas.toBlob((blob) => {
       if (!blob) return
       const file = new File([blob], `pantry-${Date.now()}.jpg`, { type: 'image/jpeg' })
-      if (cameraModeRef.current === 'replace') {
-        setImageFiles((current) => [...current.slice(0, -1), file])
-        setPreviewUrls((current) => [...current.slice(0, -1), URL.createObjectURL(file)])
-        setDetectedItems([])
-        setRecipe(null)
-      } else {
-        addImage(file)
-      }
+      addImage(file)
       stopCamera()
     }, 'image/jpeg', 0.92)
   }
 
-  // Vision API Call
   const handleAnalyze = async () => {
     if (imageFiles.length === 0) return
     setIsAnalyzing(true)
 
     const formData = new FormData()
-    imageFiles.forEach((file) => formData.append('image', file))
 
     try {
+      for (let i = 0; i < imageFiles.length; i++) {
+        const img = new Image()
+        img.src = previewUrls[i]
+        
+        await new Promise((resolve) => (img.onload = resolve))
+
+        const MAX_SIZE = 1920
+        let width = img.width
+        let height = img.height
+        if (width > height && width > MAX_SIZE) {
+          height *= MAX_SIZE / width
+          width = MAX_SIZE
+        } else if (height > MAX_SIZE) {
+          width *= MAX_SIZE / height
+          height = MAX_SIZE
+        }
+
+        const canvas = document.createElement('canvas')
+        canvas.width = width
+        canvas.height = height
+        const ctx = canvas.getContext('2d')
+        ctx?.drawImage(img, 0, 0, width, height)
+
+        const compressedBlob = await new Promise<Blob | null>((resolve) => 
+          canvas.toBlob(resolve, 'image/jpeg', 0.95)
+        )
+
+        if (compressedBlob) {
+          formData.append('image', compressedBlob, `scan-${i}.jpg`)
+        }
+      }
+
       const res = await fetch('/api/vision', {
         method: 'POST',
         body: formData,
@@ -135,21 +165,10 @@ export default function Home() {
       if (data.items) {
         setDetectedItems(data.items)
         data.items.forEach((item: InventoryItem) => addItem(item))
-
-        const recipeResponse = await fetch('/api/recipes', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ inventory: data.items, filters: [] }),
-        })
-        const recipeData = await recipeResponse.json()
-        if (!recipeResponse.ok || !recipeData.recipe) {
-          throw new Error(recipeData.error || 'Recipe generation failed')
-        }
-        setRecipe(recipeData.recipe)
       }
     } catch (error) {
       console.error('Failed to analyze image', error)
-      alert(error instanceof Error ? error.message : 'Analysis failed. Check console.')
+      alert('Analysis failed. Check console.')
     } finally {
       setIsAnalyzing(false)
     }
@@ -159,19 +178,53 @@ export default function Home() {
     setImageFiles([])
     setPreviewUrls([])
     setDetectedItems([])
-    setRecipe(null)
+  }
+
+  const startEditing = (item: InventoryItem) => {
+    setEditingId(item.id)
+    setEditName(item.name)
+    setEditQuantity(item.quantity)
+  }
+
+  const saveEdit = (id: string) => {
+    updateItem(id, { name: editName, quantity: editQuantity })
+    setEditingId(null)
+  }
+
+  const handleGenerateRecipe = async () => {
+    if (items.length === 0) return
+    setIsGeneratingRecipe(true)
+    
+    try {
+      const res = await fetch('/api/recipes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          inventory: items, 
+          filters: ['quick and easy', 'dinner']
+        }),
+      })
+      const data = await res.json()
+      if (data.recipe) {
+        setRecipe(data.recipe)
+      }
+    } catch (error) {
+      console.error('Failed to generate recipe', error)
+    } finally {
+      setIsGeneratingRecipe(false)
+    }
   }
 
   return (
     <main className={`mx-auto flex h-dvh w-full flex-col overflow-hidden shadow-2xl transition-colors duration-300 ${isDark ? 'bg-[#17201b] text-[#edf4ed] shadow-black/30' : 'bg-[#f6f7f2] text-[#1d2b24] shadow-[#274936]/15'}`}>
       <header className={`z-10 flex shrink-0 items-center justify-between border-b px-6 pb-5 pt-[max(1.25rem,env(safe-area-inset-top))] transition-colors duration-300 ${isDark ? 'border-white/10 bg-[#17201b]' : 'border-[#dfe6dc] bg-[#f6f7f2]'}`}>
         <span className={`text-lg font-semibold tracking-tight ${isDark ? 'text-[#a8e8b8]' : 'text-[#318f54]'}`}>sous.</span>
-        <button type="button" onClick={toggleTheme} aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'} className={`p-2 transition-all duration-200 hover:-translate-y-0.5 active:scale-90 ${isDark ? 'text-[#a8e8b8] hover:text-[#d4f7da]' : 'text-[#6d9877] hover:text-[#237c46]'}`}>
+        <button type="button" onClick={toggleTheme} className={`p-2 transition-all duration-200 hover:-translate-y-0.5 active:scale-90 ${isDark ? 'text-[#a8e8b8] hover:text-[#d4f7da]' : 'text-[#6d9877] hover:text-[#237c46]'}`}>
           {isDark ? <Sun size={19} /> : <Moon size={19} />}
         </button>
       </header>
       
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         
         {/* SCANNER TAB */}
         {activeTab === 'scanner' && (
@@ -179,19 +232,15 @@ export default function Home() {
             {previewUrls.length === 0 ? (
               <div className="flex w-full flex-1 items-center justify-center">
                 <div className="flex w-full flex-col items-center gap-4">
-                  <button type="button" onClick={() => openCamera()} className={`group flex w-full max-w-[360px] items-center justify-between border px-6 py-5 text-left transition-all duration-200 hover:-translate-y-1 active:translate-y-0 active:scale-[.99] ${isDark ? 'border-[#215a3a] bg-[#215a3a] text-white shadow-lg shadow-black/25 hover:bg-[#2b6f49]' : 'border-[#1f5d3d] bg-[#1f6b43] text-white shadow-lg shadow-[#1f5d3d]/20 hover:bg-[#28794d]'}`}>
-                    <span>
-                      <span className="block text-lg font-semibold">Take a picture</span>
-                    </span>
-                    <span className="flex h-14 w-14 items-center justify-center bg-white/15 transition-transform duration-200 group-hover:scale-105">
+                  <button type="button" onClick={openCamera} className={`group flex w-full max-w-[360px] items-center justify-between border px-6 py-5 text-left transition-all duration-200 hover:-translate-y-1 active:translate-y-0 active:scale-[.99] rounded-2xl ${isDark ? 'border-[#215a3a] bg-[#215a3a] text-white shadow-lg shadow-black/25 hover:bg-[#2b6f49]' : 'border-[#1f5d3d] bg-[#1f6b43] text-white shadow-lg shadow-[#1f5d3d]/20 hover:bg-[#28794d]'}`}>
+                    <span><span className="block text-lg font-semibold">Take a picture</span></span>
+                    <span className="flex h-14 w-14 items-center justify-center rounded-xl bg-white/15 transition-transform duration-200 group-hover:scale-105">
                       <Camera size={28} strokeWidth={1.7} />
                     </span>
                   </button>
-                  <label className={`group flex w-full max-w-[360px] cursor-pointer items-center justify-between border px-6 py-5 text-left transition-all duration-200 hover:-translate-y-1 active:translate-y-0 active:scale-[.99] ${isDark ? 'border-[#44bb78] bg-[#44bb78] text-[#102719] hover:bg-[#55c987]' : 'border-[#b9d1be] bg-[#f7faf6] text-[#1f6b43] shadow-sm hover:bg-white'}`}>
-                    <span>
-                      <span className="block text-lg font-semibold">Upload a file</span>
-                    </span>
-                    <span className={`flex h-14 w-14 items-center justify-center transition-transform duration-200 group-hover:scale-105 ${isDark ? 'bg-black/10 text-[#102719]' : 'bg-[#e2f0e4] text-[#1f6b43]'}`}>
+                  <label className={`group flex w-full max-w-[360px] cursor-pointer items-center justify-between border px-6 py-5 text-left transition-all duration-200 hover:-translate-y-1 active:translate-y-0 active:scale-[.99] rounded-2xl ${isDark ? 'border-[#44bb78] bg-[#44bb78] text-[#102719] hover:bg-[#55c987]' : 'border-[#b9d1be] bg-[#f7faf6] text-[#1f6b43] shadow-sm hover:bg-white'}`}>
+                    <span><span className="block text-lg font-semibold">Upload a file</span></span>
+                    <span className={`flex h-14 w-14 items-center justify-center rounded-xl transition-transform duration-200 group-hover:scale-105 ${isDark ? 'bg-black/10 text-[#102719]' : 'bg-[#e2f0e4] text-[#1f6b43]'}`}>
                       <Upload size={28} strokeWidth={1.7} />
                     </span>
                     <input type="file" accept="image/*" multiple className="hidden" onChange={handleUpload}/>
@@ -200,48 +249,24 @@ export default function Home() {
               </div>
             ) : (
               <div className="flex w-full flex-1 flex-col items-center">
-                
-                {/* Image & Bounding Boxes Container */}
-                <div className={`min-h-0 w-full flex-1 overflow-hidden bg-black shadow-md ${previewUrls.length > 1 ? 'grid grid-cols-2 gap-2 p-2' : 'flex justify-center'}`}>
+                <div className={`relative min-h-0 w-full flex-1 overflow-hidden rounded-2xl bg-black shadow-md ${previewUrls.length > 1 ? 'grid grid-cols-2 gap-2 p-2' : 'flex justify-center'}`}>
                   {previewUrls.map((url, index) => (
-                    <img key={url} src={url} alt={`Selected ${index + 1}`} className={previewUrls.length === 1 ? 'h-full w-full object-cover opacity-90' : 'h-full min-h-0 w-full object-contain opacity-90'} />
+                    <img key={url} src={url} alt={`Selected ${index + 1}`} className={previewUrls.length === 1 ? 'h-full w-full object-fill opacity-90' : 'h-full min-h-0 w-full object-contain opacity-90'} />
                   ))}
-                  
-                  {/* Render Bounding Boxes */}
                   {previewUrls.length === 1 && detectedItems.map((item, idx) => {
                     if (!item.box_2d) return null;
                     const [ymin, xmin, ymax, xmax] = item.box_2d;
                     return (
-                      <div 
-                        key={idx}
-                        className="absolute border-2 border-emerald-400 bg-emerald-400/20 flex items-end justify-center cursor-pointer hover:bg-emerald-400/40 transition-colors"
-                        style={{
-                          top: `${(ymin / 1000) * 100}%`,
-                          left: `${(xmin / 1000) * 100}%`,
-                          height: `${((ymax - ymin) / 1000) * 100}%`,
-                          width: `${((xmax - xmin) / 1000) * 100}%`,
-                        }}
-                      >
-                        <span className="bg-emerald-600 text-white text-[10px] font-bold px-1 py-0.5 rounded shadow-sm transform translate-y-full mt-1">
-                          {item.name}
-                        </span>
+                      <div key={idx} className="absolute border-2 border-emerald-400 bg-emerald-400/20 flex items-end justify-center cursor-pointer hover:bg-emerald-400/40 transition-colors rounded-sm"
+                        style={{ top: `${(ymin / 1000) * 100}%`, left: `${(xmin / 1000) * 100}%`, height: `${((ymax - ymin) / 1000) * 100}%`, width: `${((xmax - xmin) / 1000) * 100}%` }}>
+                        <span className="bg-emerald-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm transform translate-y-full mt-1 whitespace-nowrap">{item.name}</span>
                       </div>
                     )
                   })}
                 </div>
-                
-                <div className="mt-5 grid w-full grid-cols-3 gap-2">
-                  <button type="button" onClick={() => openCamera('replace')} className={`border px-2 py-4 text-center text-sm font-semibold transition-all duration-200 hover:-translate-y-0.5 active:scale-[.98] ${isDark ? 'border-[#347a4b] bg-[#202b24] text-[#a8e8b8] hover:bg-[#2b392f]' : 'border-[#b9dfc2] bg-white text-[#318f54] hover:bg-[#e4f5e8]'}`}>
-                    Retake image
-                  </button>
-                  <button type="button" onClick={() => setIsAddMoreOpen(true)} className={`border px-2 py-4 text-center text-sm font-semibold transition-all duration-200 hover:-translate-y-0.5 active:scale-[.98] ${isDark ? 'border-[#347a4b] bg-[#202b24] text-[#a8e8b8] hover:bg-[#2b392f]' : 'border-[#b9dfc2] bg-white text-[#318f54] hover:bg-[#e4f5e8]'}`}>
-                    Add more
-                  </button>
-                  <button 
-                    onClick={handleAnalyze} 
-                    disabled={isAnalyzing}
-                    className={`flex flex-1 items-center justify-center border py-4 font-semibold text-white shadow-md transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg active:scale-[.98] disabled:opacity-50 ${isDark ? 'border-[#347a4b] bg-[#205b35]' : 'border-[#247c46] bg-[#318f54]'}`}
-                  >
+                <div className="mt-5 flex w-full gap-3">
+                  <button onClick={clearImage} className={`flex-1 rounded-xl border py-4 font-semibold transition-all duration-200 active:scale-[.98] ${isDark ? 'border-[#347a4b] bg-[#202b24] text-[#a8e8b8] hover:bg-[#2b392f]' : 'border-[#b9dfc2] bg-white text-[#318f54] hover:bg-[#e4f5e8]'}`}>Retake</button>
+                  <button onClick={handleAnalyze} disabled={isAnalyzing} className={`flex flex-1 items-center justify-center rounded-xl border py-4 font-semibold text-white shadow-md transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg active:scale-[.98] disabled:opacity-50 ${isDark ? 'border-[#347a4b] bg-[#205b35]' : 'border-[#247c46] bg-[#318f54]'}`}>
                     {isAnalyzing ? <Loader2 className="animate-spin" /> : 'Analyze'}
                   </button>
                 </div>
@@ -252,20 +277,43 @@ export default function Home() {
 
         {/* INVENTORY TAB */}
         {activeTab === 'inventory' && (
-          <div className="h-full overflow-hidden px-5 pb-4 pt-6">
-            <h2 className="mb-2 text-2xl font-bold tracking-tight">Your Inventory</h2>
-            <p className={`mb-5 text-sm ${isDark ? 'text-[#9caf9f]' : 'text-slate-500'}`}>{items.length} {items.length === 1 ? 'ingredient' : 'ingredients'} tracked</p>
+          <div className="h-full overflow-y-auto px-5 pb-4 pt-6">
+            <div className="flex items-end justify-between mb-5">
+              <div>
+                <h2 className="text-2xl font-bold tracking-tight">Your Inventory</h2>
+                <p className={`text-sm mt-1 ${isDark ? 'text-[#9caf9f]' : 'text-slate-500'}`}>{items.length} {items.length === 1 ? 'ingredient' : 'ingredients'} tracked</p>
+              </div>
+            </div>
+            
             {items.length === 0 ? (
-              <div className={`border border-dashed p-8 text-center text-sm ${isDark ? 'border-white/15 bg-[#202b24] text-[#9caf9f]' : 'border-slate-200 bg-white text-slate-400'}`}>No ingredients yet.</div>
+              <div className={`rounded-2xl border border-dashed p-10 text-center text-sm ${isDark ? 'border-white/15 bg-[#202b24] text-[#9caf9f]' : 'border-slate-200 bg-white text-slate-400'}`}>
+                <List size={32} className="mx-auto mb-3 opacity-50" />
+                No ingredients yet. Scan your fridge to get started.
+              </div>
             ) : (
-              <div className="flex flex-col gap-3 overflow-hidden">
-                {items.map((item, idx) => (
-                  <div key={idx} className={`flex items-center justify-between border p-4 shadow-sm ${isDark ? 'border-white/10 bg-[#202b24]' : 'border-slate-200 bg-white'}`}>
-                    <div>
-                      <p className="font-bold">{item.name}</p>
-                      {item.brand && <p className={`text-xs ${isDark ? 'text-[#9caf9f]' : 'text-gray-500'}`}>{item.brand}</p>}
-                    </div>
-                    <span className={`px-3 py-1 text-sm font-medium ${isDark ? 'bg-white/10 text-[#d5e5d7]' : 'bg-slate-100 text-slate-600'}`}>{item.quantity}</span>
+              <div className="flex flex-col gap-3">
+                {items.map((item) => (
+                  <div key={item.id} className={`flex items-center justify-between rounded-xl border p-4 shadow-sm transition-all ${isDark ? 'border-white/10 bg-[#202b24]' : 'border-slate-200 bg-white'}`}>
+                    {editingId === item.id ? (
+                      <div className="flex w-full flex-col gap-3">
+                        <input type="text" value={editName} onChange={(e) => setEditName(e.target.value)} className={`w-full rounded-lg border p-2 text-sm outline-none ${isDark ? 'border-white/20 bg-[#17201b] text-white focus:border-[#a8e8b8]' : 'border-slate-300 bg-slate-50 text-black focus:border-[#318f54]'}`} placeholder="Item Name"/>
+                        <div className="flex gap-2">
+                          <input type="text" value={editQuantity} onChange={(e) => setEditQuantity(e.target.value)} className={`flex-1 rounded-lg border p-2 text-sm outline-none ${isDark ? 'border-white/20 bg-[#17201b] text-white focus:border-[#a8e8b8]' : 'border-slate-300 bg-slate-50 text-black focus:border-[#318f54]'}`} placeholder="Quantity"/>
+                          <button onClick={() => saveEdit(item.id)} className={`flex items-center justify-center rounded-lg px-4 ${isDark ? 'bg-[#347a4b] text-white' : 'bg-[#318f54] text-white'}`}><Check size={18} /></button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex-1 pr-4">
+                          <p className="font-bold text-base">{item.name}</p>
+                          <p className={`text-xs mt-0.5 ${isDark ? 'text-[#9caf9f]' : 'text-gray-500'}`}>{item.quantity} {item.brand && `• ${item.brand}`}</p>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button onClick={() => startEditing(item)} className={`p-2 transition-colors rounded-lg ${isDark ? 'text-[#9caf9f] hover:bg-white/10 hover:text-white' : 'text-slate-400 hover:bg-slate-100 hover:text-[#318f54]'}`}><Edit2 size={18} /></button>
+                          <button onClick={() => removeItem(item.id)} className={`p-2 transition-colors rounded-lg ${isDark ? 'text-[#9caf9f] hover:bg-red-900/40 hover:text-red-400' : 'text-slate-400 hover:bg-red-50 hover:text-red-500'}`}><Trash2 size={18} /></button>
+                        </div>
+                      </>
+                    )}
                   </div>
                 ))}
               </div>
@@ -275,13 +323,60 @@ export default function Home() {
 
         {/* CHEF TAB */}
         {activeTab === 'chef' && (
-          <div className="h-full px-5 pb-4 pt-6">
+          <div className="h-full overflow-y-auto px-5 pb-4 pt-6">
             <h2 className="mb-2 text-2xl font-bold tracking-tight">Chef Mode</h2>
-            <p className={`mb-5 text-sm ${isDark ? 'text-[#9caf9f]' : 'text-slate-500'}`}>Recipes</p>
-            <div className={`border p-8 text-center shadow-sm ${isDark ? 'border-white/10 bg-[#202b24]' : 'border-slate-200 bg-white'}`}>
-              <ChefHat size={38} className={`mx-auto mb-4 ${isDark ? 'text-[#9caf9f]' : 'text-slate-400'}`} />
-              {recipe ? <p className="whitespace-pre-wrap text-left text-sm leading-6">{recipe}</p> : <p className={`text-sm ${isDark ? 'text-[#9caf9f]' : 'text-slate-500'}`}>No recipes yet.</p>}
-            </div>
+            <p className={`mb-5 text-sm ${isDark ? 'text-[#9caf9f]' : 'text-slate-500'}`}>Cook with what you have.</p>
+            
+            <button 
+              onClick={handleGenerateRecipe}
+              disabled={isGeneratingRecipe || items.length === 0}
+              className={`mb-6 flex w-full items-center justify-center gap-2 rounded-xl border py-4 font-semibold text-white shadow-md transition-all duration-200 hover:-translate-y-0.5 active:scale-[.98] disabled:opacity-50 ${isDark ? 'border-[#347a4b] bg-[#205b35]' : 'border-[#247c46] bg-[#318f54]'}`}
+            >
+              {isGeneratingRecipe ? <Loader2 className="animate-spin" /> : <Sparkles size={20} />}
+              {isGeneratingRecipe ? 'Ask Sous...' : 'Generate Recipe'}
+            </button>
+
+            {recipe ? (
+              <div className={`overflow-hidden rounded-2xl border shadow-sm ${isDark ? 'border-white/10 bg-[#202b24]' : 'border-slate-200 bg-white'}`}>
+                <div className={`p-6 border-b ${isDark ? 'border-white/10 bg-[#1c261f]' : 'border-slate-100 bg-slate-50'}`}>
+                  <h3 className="text-xl font-bold leading-tight mb-4">{recipe.title}</h3>
+                  <div className="flex flex-wrap gap-4 text-sm">
+                    <span className={`flex items-center gap-1.5 font-medium ${isDark ? 'text-[#a8e8b8]' : 'text-[#318f54]'}`}><Clock size={16}/> {recipe.prepTime}</span>
+                    <span className={`flex items-center gap-1.5 font-medium ${isDark ? 'text-[#e8a8a8]' : 'text-orange-600'}`}><Flame size={16}/> {recipe.cookTime}</span>
+                    <span className={`flex items-center gap-1.5 font-medium ${isDark ? 'text-[#9caf9f]' : 'text-slate-600'}`}><Users size={16}/> {recipe.servings}</span>
+                  </div>
+                </div>
+                
+                <div className="p-6">
+                  <h4 className="font-bold mb-3 flex items-center gap-2"><List size={18}/> Ingredients</h4>
+                  <ul className="mb-8 space-y-2">
+                    {recipe.ingredients.map((ing, i) => (
+                      <li key={i} className={`text-sm flex items-start gap-2 ${isDark ? 'text-[#d5e5d7]' : 'text-slate-700'}`}>
+                        <span className={`mt-1.5 h-1.5 w-1.5 rounded-full shrink-0 ${isDark ? 'bg-[#a8e8b8]' : 'bg-[#318f54]'}`} />
+                        {ing}
+                      </li>
+                    ))}
+                  </ul>
+
+                  <h4 className="font-bold mb-3 flex items-center gap-2"><ChefHat size={18}/> Instructions</h4>
+                  <div className="space-y-4">
+                    {recipe.instructions.map((step, i) => (
+                      <div key={i} className="flex gap-3 text-sm">
+                        <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold ${isDark ? 'bg-white/10 text-[#a8e8b8]' : 'bg-[#e4f5e8] text-[#318f54]'}`}>{i + 1}</span>
+                        <p className={`pt-0.5 leading-relaxed ${isDark ? 'text-[#d5e5d7]' : 'text-slate-700'}`}>{step}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className={`rounded-2xl border p-10 text-center shadow-sm ${isDark ? 'border-white/10 bg-[#202b24]' : 'border-slate-200 bg-white'}`}>
+                <ChefHat size={42} className={`mx-auto mb-4 ${isDark ? 'text-[#347a4b]' : 'text-[#b9dfc2]'}`} />
+                <p className={`text-sm ${isDark ? 'text-[#9caf9f]' : 'text-slate-500'}`}>
+                  {items.length === 0 ? "Scan ingredients first to generate a recipe." : "Tap above to see what Sous can make."}
+                </p>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -289,43 +384,18 @@ export default function Home() {
       {isCameraOpen && (
         <div className="absolute inset-0 z-30 flex flex-col bg-black">
           <div className="flex items-center justify-between px-5 pb-4 pt-[max(1.25rem,env(safe-area-inset-top))]">
-            <button type="button" onClick={stopCamera} aria-label="Close camera" className="bg-white/10 p-2 text-white"><X size={20} /></button>
-            <button type="button" onClick={takePhoto} aria-label="Take photo" disabled={!!cameraError} className="bg-white p-2 text-black disabled:opacity-40"><Circle size={34} fill="currentColor" strokeWidth={1.5} /></button>
+            <button type="button" onClick={stopCamera} className="rounded-full bg-white/10 p-2 text-white hover:bg-white/20 transition-colors"><X size={20} /></button>
+            <button type="button" onClick={takePhoto} disabled={!!cameraError} className="rounded-full bg-white p-2 text-black disabled:opacity-40 hover:scale-105 transition-transform"><Circle size={34} fill="currentColor" strokeWidth={1.5} /></button>
           </div>
           {cameraError ? <p className="m-auto px-8 text-center text-sm text-zinc-300">{cameraError}</p> : <video ref={videoRef} autoPlay playsInline muted className="min-h-0 flex-1 object-cover" />}
         </div>
       )}
-      {isAddMoreOpen && (
-        <div className={`absolute inset-0 z-25 flex items-end ${isDark ? 'bg-black/60' : 'bg-[#1d2b24]/25'}`}>
-          <div className={`w-full border-t p-5 ${isDark ? 'border-white/10 bg-[#202b24]' : 'border-[#dfe6dc] bg-white'}`}>
-            <div className="mb-4 flex items-center justify-between">
-              <span className="font-semibold">Add another image</span>
-              <button type="button" onClick={() => setIsAddMoreOpen(false)} aria-label="Close add image options" className="p-1"><X size={19} /></button>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <button type="button" onClick={() => { setIsAddMoreOpen(false); openCamera('append') }} className={`border py-4 font-semibold ${isDark ? 'border-[#347a4b] bg-[#215a3a] text-white' : 'border-[#1f5d3d] bg-[#1f6b43] text-white'}`}>
-                Use camera
-              </button>
-              <label className={`flex cursor-pointer items-center justify-center border py-4 font-semibold ${isDark ? 'border-[#44bb78] bg-[#44bb78] text-[#102719]' : 'border-[#b9d1be] bg-[#f7faf6] text-[#1f6b43]'}`}>
-                Upload files
-                <input type="file" accept="image/*" multiple className="hidden" onChange={handleUpload} />
-              </label>
-            </div>
-          </div>
-        </div>
-      )}
+      
       <nav className={`z-20 flex w-full shrink-0 items-center justify-around border-t px-6 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 transition-colors duration-300 ${isDark ? 'border-white/10 bg-[#202b24]' : 'border-[#dfe6dc] bg-white'}`}>
-        <button onClick={() => setActiveTab('scanner')} aria-label="Scan" className={`flex flex-col items-center gap-1 p-2 transition-all duration-200 hover:-translate-y-0.5 active:scale-90 ${activeTab === 'scanner' ? (isDark ? 'text-[#a8e8b8]' : 'text-[#318f54]') : isDark ? 'text-[#809388]' : 'text-[#9aa69c]'}`}>
-          <Camera size={22} />
-        </button>
-        <button onClick={() => setActiveTab('inventory')} aria-label="Inventory" className={`flex flex-col items-center gap-1 p-2 transition-all duration-200 hover:-translate-y-0.5 active:scale-90 ${activeTab === 'inventory' ? (isDark ? 'text-[#a8e8b8]' : 'text-[#318f54]') : isDark ? 'text-[#809388]' : 'text-[#9aa69c]'}`}>
-          <List size={22} />
-        </button>
-        <button onClick={() => setActiveTab('chef')} aria-label="Chef" className={`flex flex-col items-center gap-1 p-2 transition-all duration-200 hover:-translate-y-0.5 active:scale-90 ${activeTab === 'chef' ? (isDark ? 'text-[#a8e8b8]' : 'text-[#318f54]') : isDark ? 'text-[#809388]' : 'text-[#9aa69c]'}`}>
-          <ChefHat size={22} />
-        </button>
+        <button onClick={() => setActiveTab('scanner')} className={`flex flex-col items-center gap-1 p-2 transition-all duration-200 hover:-translate-y-0.5 active:scale-90 ${activeTab === 'scanner' ? (isDark ? 'text-[#a8e8b8]' : 'text-[#318f54]') : isDark ? 'text-[#809388]' : 'text-[#9aa69c]'}`}><Camera size={22} /></button>
+        <button onClick={() => setActiveTab('inventory')} className={`flex flex-col items-center gap-1 p-2 transition-all duration-200 hover:-translate-y-0.5 active:scale-90 ${activeTab === 'inventory' ? (isDark ? 'text-[#a8e8b8]' : 'text-[#318f54]') : isDark ? 'text-[#809388]' : 'text-[#9aa69c]'}`}><List size={22} /></button>
+        <button onClick={() => setActiveTab('chef')} className={`flex flex-col items-center gap-1 p-2 transition-all duration-200 hover:-translate-y-0.5 active:scale-90 ${activeTab === 'chef' ? (isDark ? 'text-[#a8e8b8]' : 'text-[#318f54]') : isDark ? 'text-[#809388]' : 'text-[#9aa69c]'}`}><ChefHat size={22} /></button>
       </nav>
-
     </main>
   )
 }
