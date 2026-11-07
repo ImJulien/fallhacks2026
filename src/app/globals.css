@@ -16,9 +16,20 @@ html,
 body {
   height: 100%;
   overflow: hidden;
+  scrollbar-width: none;
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-geist-sans), sans-serif;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+*::-webkit-scrollbar {
+  display: none;
+}
+
+* {
+  scrollbar-width: none;
 }
 
 button,

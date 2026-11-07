@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { Camera, List, ChefHat, Loader2, Upload, X, Circle, Moon, Sun, Sparkles, Trash2, Edit2, Check, Clock, Flame, Users } from 'lucide-react'
+import { motion } from 'framer-motion'
 import { useInventory, InventoryItem } from '@/store/useInventory'
 
 interface Recipe {
@@ -26,13 +27,28 @@ export default function Home() {
   const [cameraError, setCameraError] = useState<string | null>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  const sidekickConstraintsRef = useRef<HTMLDivElement>(null)
+  const sidekickRef = useRef<HTMLDivElement>(null)
 
   // Recipe State
   const [recipe, setRecipe] = useState<Recipe | null>(null)
   const [isGeneratingRecipe, setIsGeneratingRecipe] = useState(false)
+  const [isSidekickOpen, setIsSidekickOpen] = useState(false)
+  const [sidekickDrop, setSidekickDrop] = useState(0)
+  const [recipeError, setRecipeError] = useState<string | null>(null)
+  const [recipePreferences, setRecipePreferences] = useState<string[]>(['quick and easy'])
+
+  const recipeOptions = [
+    { label: 'Quick & easy', value: 'quick and easy' },
+    { label: 'Comfort food', value: 'comfort food' },
+    { label: 'High protein', value: 'high protein' },
+    { label: 'Vegetarian', value: 'vegetarian' },
+    { label: 'Budget-friendly', value: 'budget-friendly' },
+  ]
 
   // Inventory Edit State
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [editingDetectedId, setEditingDetectedId] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
   const [editQuantity, setEditQuantity] = useState('')
 
@@ -48,7 +64,7 @@ export default function Home() {
     })
   }
 
-  const { items, addItem, removeItem, updateItem } = useInventory()
+  const { items, addItem, removeItem, updateItem, clearInventory } = useInventory()
 
   const handleUpload = (e: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? [])
@@ -73,9 +89,11 @@ export default function Home() {
 
   const openCamera = async () => {
     setCameraError(null)
+    setIsCameraOpen(true)
     if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraError('Camera access is not available in this browser.')
-      setIsCameraOpen(true)
+      setCameraError(window.isSecureContext
+        ? 'Camera access is not available in this browser. You can upload a photo instead.'
+        : 'Camera access requires HTTPS on mobile browsers. Use the upload option or open this app over HTTPS.')
       return
     }
     try {
@@ -84,11 +102,14 @@ export default function Home() {
         audio: false,
       })
       streamRef.current = stream
-      setIsCameraOpen(true)
     } catch (error) {
       console.error('Unable to access camera', error)
-      setCameraError('Camera access was denied or unavailable.')
-      setIsCameraOpen(true)
+      const errorName = error instanceof DOMException ? error.name : ''
+      setCameraError(errorName === 'NotAllowedError'
+        ? window.isSecureContext
+          ? 'Camera permission was denied or already blocked. Allow camera access in your browser settings, then try again.'
+          : 'Your phone requires HTTPS before it will ask for camera permission. Use the upload option or open this app over HTTPS.'
+        : 'Camera access is unavailable. Check your browser permissions or use the upload option.')
     }
   }
 
@@ -130,7 +151,7 @@ export default function Home() {
         
         await new Promise((resolve) => (img.onload = resolve))
 
-        const MAX_SIZE = 1920
+        const MAX_SIZE = 2200
         let width = img.width
         let height = img.height
         if (width > height && width > MAX_SIZE) {
@@ -148,7 +169,7 @@ export default function Home() {
         ctx?.drawImage(img, 0, 0, width, height)
 
         const compressedBlob = await new Promise<Blob | null>((resolve) => 
-          canvas.toBlob(resolve, 'image/jpeg', 0.95)
+          canvas.toBlob(resolve, 'image/jpeg', 0.98)
         )
 
         if (compressedBlob) {
@@ -175,8 +196,14 @@ export default function Home() {
   }
 
   const clearImage = () => {
+    detectedItems.forEach((item) => removeItem(item.id))
     setImageFiles([])
     setPreviewUrls([])
+    setDetectedItems([])
+  }
+
+  const cancelDetectedItems = () => {
+    detectedItems.forEach((item) => removeItem(item.id))
     setDetectedItems([])
   }
 
@@ -186,14 +213,32 @@ export default function Home() {
     setEditQuantity(item.quantity || '')
   }
 
+  const startDetectedEditing = (item: InventoryItem) => {
+    setEditingDetectedId(item.id)
+    setEditName(item.name)
+    setEditQuantity(item.quantity || '')
+  }
+
   const saveEdit = (id: string) => {
     updateItem(id, { name: editName, quantity: editQuantity })
     setEditingId(null)
   }
 
+  const saveDetectedEdit = (id: string) => {
+    const currentItem = detectedItems.find((item) => item.id === id)
+    if (!currentItem) return
+    const updatedItem = { name: editName.trim() || currentItem.name, quantity: editQuantity.trim() }
+    updateItem(id, updatedItem)
+    setDetectedItems((current) => current.map((item) => (
+      item.id === id ? { ...item, ...updatedItem } : item
+    )))
+    setEditingDetectedId(null)
+  }
+
   const handleGenerateRecipe = async () => {
     if (items.length === 0) return
     setIsGeneratingRecipe(true)
+    setRecipeError(null)
     
     try {
       const res = await fetch('/api/recipes', {
@@ -201,19 +246,49 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           inventory: items, 
-          filters: ['quick and easy', 'dinner']
+          filters: recipePreferences
         }),
       })
+      if (!res.ok) throw new Error('Recipe request failed')
       const data = await res.json()
       if (data.recipe) {
         setRecipe(data.recipe)
+      } else {
+        throw new Error('Recipe response was empty')
       }
+
     } catch (error) {
       console.error('Failed to generate recipe', error)
+      setRecipeError('I couldn’t make that recipe right now. Try again in a moment.')
     } finally {
       setIsGeneratingRecipe(false)
     }
+
   }
+
+  const toggleRecipePreference = (value: string) => {
+    setRecipePreferences((current) => current.includes(value)
+      ? current.filter((preference) => preference !== value)
+      : [...current, value])
+  }
+
+  const toggleSidekick = () => {
+    if (!isSidekickOpen && sidekickRef.current) {
+      const top = sidekickRef.current.getBoundingClientRect().top
+      setSidekickDrop(Math.max(0, 180 - top))
+    }
+    setIsSidekickOpen((open) => !open)
+  }
+
+  const sidekickTip = activeTab === 'scanner'
+    ? items.length > 0
+      ? 'I found ingredients in your inventory. Let me turn them into a recipe!'
+      : 'Take a photo of your fridge or pantry, and I’ll help you spot ingredients.'
+    : activeTab === 'inventory'
+      ? 'You can edit an ingredient anytime. I’ll use your inventory to build recipes.'
+      : recipe
+        ? `Your ${recipe.title} is ready. I’m here if you need a cooking tip!`
+        : 'Give me your ingredients and I’ll dream up something delicious.'
 
   return (
     <main className={`mx-auto flex h-dvh w-full flex-col overflow-hidden shadow-2xl transition-colors duration-300 ${isDark ? 'bg-[#17201b] text-[#edf4ed] shadow-black/30' : 'bg-[#f6f7f2] text-[#1d2b24] shadow-[#274936]/15'}`}>
@@ -257,14 +332,17 @@ export default function Home() {
                     if (!item.box_2d) return null;
                     const [ymin, xmin, ymax, xmax] = item.box_2d;
                     return (
-                      <div key={idx} className="absolute border-2 border-emerald-400 bg-emerald-400/20 flex items-end justify-center cursor-pointer hover:bg-emerald-400/40 transition-colors rounded-sm"
+                      <button type="button" key={item.id || idx} onClick={() => startDetectedEditing(item)} className="absolute border-2 border-emerald-400 bg-emerald-400/20 flex items-end justify-center cursor-pointer hover:bg-emerald-400/40 transition-colors rounded-sm"
                         style={{ top: `${(ymin / 1000) * 100}%`, left: `${(xmin / 1000) * 100}%`, height: `${((ymax - ymin) / 1000) * 100}%`, width: `${((xmax - xmin) / 1000) * 100}%` }}>
                         <span className="bg-emerald-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm transform translate-y-full mt-1 whitespace-nowrap">{item.name}</span>
-                      </div>
+                      </button>
                     )
                   })}
                 </div>
                 <div className="mt-5 flex w-full gap-3">
+                  {detectedItems.length > 0 && (
+                    <button onClick={cancelDetectedItems} className={`flex-1 rounded-xl border py-4 font-semibold transition-all duration-200 active:scale-[.98] ${isDark ? 'border-red-900/50 bg-[#202b24] text-red-300 hover:bg-red-900/30' : 'border-red-200 bg-white text-red-500 hover:bg-red-50'}`}>Cancel</button>
+                  )}
                   <button onClick={clearImage} className={`flex-1 rounded-xl border py-4 font-semibold transition-all duration-200 active:scale-[.98] ${isDark ? 'border-[#347a4b] bg-[#202b24] text-[#a8e8b8] hover:bg-[#2b392f]' : 'border-[#b9dfc2] bg-white text-[#318f54] hover:bg-[#e4f5e8]'}`}>Retake</button>
                   <button onClick={handleAnalyze} disabled={isAnalyzing} className={`flex flex-1 items-center justify-center rounded-xl border py-4 font-semibold text-white shadow-md transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg active:scale-[.98] disabled:opacity-50 ${isDark ? 'border-[#347a4b] bg-[#205b35]' : 'border-[#247c46] bg-[#318f54]'}`}>
                     {isAnalyzing ? <Loader2 className="animate-spin" /> : 'Analyze'}
@@ -278,11 +356,24 @@ export default function Home() {
         {/* INVENTORY TAB */}
         {activeTab === 'inventory' && (
           <div className="h-full overflow-y-auto px-5 pb-4 pt-6">
-            <div className="flex items-end justify-between mb-5">
+            <div className="mb-5 flex items-end justify-between">
               <div>
                 <h2 className="text-2xl font-bold tracking-tight">Your Inventory</h2>
                 <p className={`text-sm mt-1 ${isDark ? 'text-[#9caf9f]' : 'text-slate-500'}`}>{items.length} {items.length === 1 ? 'ingredient' : 'ingredients'} tracked</p>
               </div>
+            {items.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm('Clear all ingredients from your inventory?')) {
+                    clearInventory()
+                  }
+                }}
+                className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${isDark ? 'text-red-300 hover:bg-red-900/30' : 'text-red-500 hover:bg-red-50'}`}
+              >
+                Clear all
+              </button>
+            )}
             </div>
             
             {items.length === 0 ? (
@@ -336,6 +427,28 @@ export default function Home() {
               {isGeneratingRecipe ? 'Ask Sous...' : 'Generate Recipe'}
             </button>
 
+            <div className={`mb-6 rounded-2xl border p-4 ${isDark ? 'border-white/10 bg-[#202b24]' : 'border-slate-200 bg-white'}`}>
+              <p className="mb-3 text-sm font-bold">Tell me what you’re in the mood for</p>
+              <div className="flex flex-wrap gap-2">
+                {recipeOptions.map((option) => {
+                  const selected = recipePreferences.includes(option.value)
+                  return (
+                    <button
+                      type="button"
+                      key={option.value}
+                      onClick={() => toggleRecipePreference(option.value)}
+                      className={`rounded-full border px-3 py-2 text-xs font-semibold transition-colors ${selected
+                        ? isDark ? 'border-[#a8e8b8] bg-[#347a4b] text-white' : 'border-[#318f54] bg-[#e4f5e8] text-[#247c46]'
+                        : isDark ? 'border-white/15 text-[#9caf9f] hover:bg-white/10' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}
+                    >
+                      {option.label}
+                    </button>
+                  )
+                })}
+              </div>
+              {recipeError && <p className="mt-3 text-sm text-red-500">{recipeError}</p>}
+            </div>
+
             {recipe ? (
               <div className={`overflow-hidden rounded-2xl border shadow-sm ${isDark ? 'border-white/10 bg-[#202b24]' : 'border-slate-200 bg-white'}`}>
                 <div className={`p-6 border-b ${isDark ? 'border-white/10 bg-[#1c261f]' : 'border-slate-100 bg-slate-50'}`}>
@@ -381,6 +494,29 @@ export default function Home() {
         )}
       </div>
 
+      {editingDetectedId && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/50 px-5">
+          <div className={`w-full max-w-sm rounded-2xl p-5 shadow-xl ${isDark ? 'bg-[#202b24] text-white' : 'bg-white text-[#1d2b24]'}`}>
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-bold">Edit detected item</h2>
+              <button type="button" onClick={() => setEditingDetectedId(null)} aria-label="Close edit dialog" className="rounded-lg p-2 opacity-70 hover:bg-black/5"><X size={18} /></button>
+            </div>
+            <div className="flex flex-col gap-3">
+              <label className="text-sm font-semibold">Name
+                <input autoFocus type="text" value={editName} onChange={(e) => setEditName(e.target.value)} className={`mt-1 w-full rounded-lg border p-3 text-sm outline-none ${isDark ? 'border-white/20 bg-[#17201b] text-white focus:border-[#a8e8b8]' : 'border-slate-300 bg-slate-50 text-black focus:border-[#318f54]'}`} />
+              </label>
+              <label className="text-sm font-semibold">Quantity
+                <input type="text" value={editQuantity} onChange={(e) => setEditQuantity(e.target.value)} className={`mt-1 w-full rounded-lg border p-3 text-sm outline-none ${isDark ? 'border-white/20 bg-[#17201b] text-white focus:border-[#a8e8b8]' : 'border-slate-300 bg-slate-50 text-black focus:border-[#318f54]'}`} placeholder="e.g. 2 jars" />
+              </label>
+              <div className="mt-2 flex gap-2">
+                <button type="button" onClick={() => { removeItem(editingDetectedId); setDetectedItems((current) => current.filter((item) => item.id !== editingDetectedId)); setEditingDetectedId(null) }} className="flex-1 rounded-lg border border-red-200 py-3 font-semibold text-red-500 hover:bg-red-50">Remove</button>
+                <button type="button" onClick={() => saveDetectedEdit(editingDetectedId)} className={`flex-1 rounded-lg py-3 font-semibold text-white ${isDark ? 'bg-[#347a4b]' : 'bg-[#318f54]'}`}>Save</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isCameraOpen && (
         <div className="absolute inset-0 z-30 flex flex-col bg-black">
           <div className="flex items-center justify-between px-5 pb-4 pt-[max(1.25rem,env(safe-area-inset-top))]">
@@ -390,7 +526,51 @@ export default function Home() {
           {cameraError ? <p className="m-auto px-8 text-center text-sm text-zinc-300">{cameraError}</p> : <video ref={videoRef} autoPlay playsInline muted className="min-h-0 flex-1 object-cover" />}
         </div>
       )}
-      
+
+      {!isCameraOpen && <div ref={sidekickConstraintsRef} className="pointer-events-none absolute inset-0 z-30">
+        <motion.div
+          ref={sidekickRef}
+          drag
+          dragConstraints={sidekickConstraintsRef}
+          dragMomentum={false}
+          dragElastic={0.08}
+          animate={{ y: sidekickDrop }}
+          className="pointer-events-auto absolute bottom-16 right-3 flex flex-col items-end gap-2"
+        >
+          {isSidekickOpen && (
+            <div className={`w-64 rounded-2xl border p-4 shadow-xl ${isDark ? 'border-[#347a4b]/60 bg-[#202b24]' : 'border-[#b9dfc2] bg-white'}`}>
+              <p className={`mb-3 text-sm leading-relaxed ${isDark ? 'text-[#d5e5d7]' : 'text-slate-600'}`}>{sidekickTip}</p>
+              {items.length > 0 && (
+                <button
+                  type="button"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={() => {
+                    setActiveTab('chef')
+                    setIsSidekickOpen(false)
+                    if (!recipe && !isGeneratingRecipe) handleGenerateRecipe()
+                  }}
+                  className={`rounded-lg px-3 py-2 text-xs font-bold text-white ${isDark ? 'bg-[#347a4b]' : 'bg-[#318f54]'}`}
+                >
+                  {recipe ? 'Open recipe' : 'Make a recipe'}
+                </button>
+              )}
+            </div>
+          )}
+          <motion.button
+            type="button"
+            onClick={toggleSidekick}
+            aria-label="Talk to Sous"
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            animate={{ rotate: [-2, 2, -2] }}
+            transition={{ rotate: { duration: 2.8, repeat: Infinity, ease: 'easeInOut' } }}
+            className="h-24 w-20 cursor-grab touch-none active:cursor-grabbing"
+          >
+            <img src="/chef.png" alt="Sous the digital chef" className="h-full w-full object-contain drop-shadow-lg" />
+          </motion.button>
+        </motion.div>
+      </div>}
+
       <nav className={`z-20 flex w-full shrink-0 items-center justify-around border-t px-6 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 transition-colors duration-300 ${isDark ? 'border-white/10 bg-[#202b24]' : 'border-[#dfe6dc] bg-white'}`}>
         <button onClick={() => setActiveTab('scanner')} className={`flex flex-col items-center gap-1 p-2 transition-all duration-200 hover:-translate-y-0.5 active:scale-90 ${activeTab === 'scanner' ? (isDark ? 'text-[#a8e8b8]' : 'text-[#318f54]') : isDark ? 'text-[#809388]' : 'text-[#9aa69c]'}`}><Camera size={22} /></button>
         <button onClick={() => setActiveTab('inventory')} className={`flex flex-col items-center gap-1 p-2 transition-all duration-200 hover:-translate-y-0.5 active:scale-90 ${activeTab === 'inventory' ? (isDark ? 'text-[#a8e8b8]' : 'text-[#318f54]') : isDark ? 'text-[#809388]' : 'text-[#9aa69c]'}`}><List size={22} /></button>
