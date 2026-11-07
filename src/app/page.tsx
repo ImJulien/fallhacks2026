@@ -133,6 +133,10 @@ export default function Home() {
         audio: false,
       })
       streamRef.current = stream
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream
+        await videoRef.current.play()
+      }
     } catch (error) {
       console.error('Unable to access camera', error)
       const errorName = error instanceof DOMException ? error.name : ''
@@ -147,6 +151,7 @@ export default function Home() {
   useEffect(() => {
     if (isCameraOpen && videoRef.current && streamRef.current) {
       videoRef.current.srcObject = streamRef.current
+      void videoRef.current.play()
     }
   }, [isCameraOpen])
 
