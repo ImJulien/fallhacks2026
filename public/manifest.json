@@ -1,0 +1,15 @@
+{
+  "name": "Sous",
+  "short_name": "Sous",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1A4331",
+  "theme_color": "#1A4331",
+  "icons": [
+    {
+      "src": "/app-icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
