@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { GoogleGenAI } from '@google/genai'
 
+interface RecipeInventoryItem {
+  name: string
+  quantity?: string
+}
+
 export async function POST(req: NextRequest) {
   try {
     const { inventory, filters } = await req.json()
@@ -15,7 +20,7 @@ export async function POST(req: NextRequest) {
       vertexai: true
     })
 
-    const ingredientsList = inventory.map((i: any) => `${i.name} (${i.quantity || 'unknown quantity'})`).join(', ')
+    const ingredientsList = inventory.map((i: RecipeInventoryItem) => `${i.name} (${i.quantity || 'unknown quantity'})`).join(', ')
 
     const prompt = `
       I have the following ingredients in my kitchen: ${ingredientsList}.

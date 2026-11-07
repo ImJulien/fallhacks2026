@@ -16,7 +16,9 @@ interface Recipe {
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<'scanner' | 'inventory' | 'chef'>('scanner')
-  const [isDark, setIsDark] = useState(false)
+  const [isDark, setIsDark] = useState(() => (
+    typeof window !== 'undefined' && window.localStorage.getItem('sous-theme') === 'dark'
+  ))
   
   // Scanner State
   const [imageFiles, setImageFiles] = useState<File[]>([])
@@ -28,11 +30,14 @@ export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const sidekickConstraintsRef = useRef<HTMLDivElement>(null)
+  const sidekickRef = useRef<HTMLDivElement>(null)
+  const sidekickBubbleRef = useRef<HTMLDivElement>(null)
 
   // Recipe State
   const [recipe, setRecipe] = useState<Recipe | null>(null)
   const [isGeneratingRecipe, setIsGeneratingRecipe] = useState(false)
   const [isSidekickOpen, setIsSidekickOpen] = useState(false)
+  const [sidekickBubblePosition, setSidekickBubblePosition] = useState({ left: 12, top: 12 })
   const [recipeError, setRecipeError] = useState<string | null>(null)
   const [recipePreferences, setRecipePreferences] = useState<string[]>(['quick and easy'])
 
@@ -50,10 +55,6 @@ export default function Home() {
   const [editName, setEditName] = useState('')
   const [editQuantity, setEditQuantity] = useState('')
 
-  useEffect(() => {
-    setIsDark(window.localStorage.getItem('sous-theme') === 'dark')
-  }, [])
-
   const toggleTheme = () => {
     setIsDark((current) => {
       const next = !current
@@ -64,9 +65,41 @@ export default function Home() {
 
   const { items, addItem, removeItem, updateItem, clearInventory } = useInventory()
 
+  const updateSidekickBubblePosition = () => {
+    const chef = sidekickRef.current
+    const bubble = sidekickBubbleRef.current
+    if (!chef || !bubble) return
+
+    const chefBounds = chef.getBoundingClientRect()
+    const bubbleBounds = bubble.getBoundingClientRect()
+    const gutter = 12
+    const left = Math.min(
+      Math.max(gutter, chefBounds.left + (chefBounds.width - bubbleBounds.width) / 2),
+      window.innerWidth - bubbleBounds.width - gutter
+    )
+    const aboveTop = chefBounds.top - bubbleBounds.height - gutter
+    const belowTop = chefBounds.bottom + gutter
+    const top = aboveTop >= gutter
+      ? aboveTop
+      : Math.min(belowTop, window.innerHeight - bubbleBounds.height - gutter)
+
+    setSidekickBubblePosition({ left, top: Math.max(gutter, top) })
+  }
+
+  useEffect(() => {
+    if (!isSidekickOpen) return
+    const frame = requestAnimationFrame(updateSidekickBubblePosition)
+    window.addEventListener('resize', updateSidekickBubblePosition)
+    return () => {
+      cancelAnimationFrame(frame)
+      window.removeEventListener('resize', updateSidekickBubblePosition)
+    }
+  }, [isSidekickOpen])
+
   const handleUpload = (e: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? [])
     if (files.length > 0) {
+      previewUrls.forEach((url) => URL.revokeObjectURL(url))
       setImageFiles(files)
       setPreviewUrls(files.map((file) => URL.createObjectURL(file)))
       setDetectedItems([])
@@ -195,6 +228,7 @@ export default function Home() {
 
   const clearImage = () => {
     detectedItems.forEach((item) => removeItem(item.id))
+    previewUrls.forEach((url) => URL.revokeObjectURL(url))
     setImageFiles([])
     setPreviewUrls([])
     setDetectedItems([])
@@ -523,36 +557,15 @@ export default function Home() {
 
       {!isCameraOpen && <div ref={sidekickConstraintsRef} className="pointer-events-none absolute inset-0 z-30">
         <motion.div
+          ref={sidekickRef}
           drag
           dragConstraints={sidekickConstraintsRef}
           dragMomentum={false}
           dragElastic={0.08}
+          onDrag={() => requestAnimationFrame(updateSidekickBubblePosition)}
           className="pointer-events-auto absolute bottom-[calc(4.5rem+env(safe-area-inset-bottom))] h-24 w-20"
           style={{ left: 'calc(50% - 40px)' }}
         >
-          {isSidekickOpen && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.92, y: 8 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              className={`absolute bottom-[calc(100%+0.5rem)] right-0 w-64 origin-bottom-right rounded-2xl border p-4 shadow-xl ${isDark ? 'border-[#347a4b]/60 bg-[#202b24]' : 'border-[#b9dfc2] bg-white'}`}
-              onPointerDown={(event) => event.stopPropagation()}
-            >
-              <p className={`mb-3 text-sm leading-relaxed ${isDark ? 'text-[#d5e5d7]' : 'text-slate-600'}`}>{sidekickTip}</p>
-              {items.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActiveTab('chef')
-                    setIsSidekickOpen(false)
-                    if (!recipe && !isGeneratingRecipe) handleGenerateRecipe()
-                  }}
-                  className={`rounded-lg px-3 py-2 text-xs font-bold text-white ${isDark ? 'bg-[#347a4b]' : 'bg-[#318f54]'}`}
-                >
-                  {recipe ? 'Open recipe' : 'Make a recipe'}
-                </button>
-              )}
-            </motion.div>
-          )}
           {!isSidekickOpen && (
             <span className={`absolute -top-7 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border px-2.5 py-1 text-[10px] font-bold shadow-sm ${isDark ? 'border-white/10 bg-[#202b24] text-[#a8e8b8]' : 'border-[#b9dfc2] bg-white text-[#318f54]'}`}>
               Drag me • tap to chat
@@ -566,12 +579,39 @@ export default function Home() {
             whileTap={{ scale: 0.95 }}
             animate={{ rotate: [-2, 2, -2] }}
             transition={{ rotate: { duration: 2.8, repeat: Infinity, ease: 'easeInOut' } }}
-            className="h-24 w-20 cursor-grab touch-none active:cursor-grabbing"
+            className="h-24 w-20 cursor-grab touch-none border-0 bg-transparent p-0 outline-none active:cursor-grabbing focus:outline-none"
           >
             <img src="/chef.png" alt="Sous the digital chef" className="h-full w-full object-contain drop-shadow-lg" />
           </motion.button>
         </motion.div>
       </div>}
+
+      {isSidekickOpen && !isCameraOpen && (
+        <motion.div
+          ref={sidekickBubbleRef}
+          initial={{ opacity: 0, scale: 0.92, y: 8 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          transition={{ type: 'spring', stiffness: 360, damping: 26 }}
+          className={`pointer-events-auto fixed z-40 w-[min(13rem,calc(100vw-1.5rem))] origin-bottom rounded-2xl border px-3 pb-1 pt-1.5 shadow-xl ${isDark ? 'border-[#347a4b]/60 bg-[#202b24]' : 'border-[#b9dfc2] bg-white'}`}
+          style={{ left: sidekickBubblePosition.left, top: sidekickBubblePosition.top }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <p className={`mb-0 text-xs leading-snug ${isDark ? 'text-[#d5e5d7]' : 'text-slate-600'}`}>{sidekickTip}</p>
+          {items.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('chef')
+                setIsSidekickOpen(false)
+                if (!recipe && !isGeneratingRecipe) handleGenerateRecipe()
+              }}
+              className={`rounded-lg px-2.5 py-1.5 text-[11px] font-bold text-white ${isDark ? 'bg-[#347a4b]' : 'bg-[#318f54]'}`}
+            >
+              {recipe ? 'Open recipe' : 'Make a recipe'}
+            </button>
+          )}
+        </motion.div>
+      )}
 
       <nav className={`z-20 flex w-full shrink-0 items-center justify-around border-t px-6 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 transition-colors duration-300 ${isDark ? 'border-white/10 bg-[#202b24]' : 'border-[#dfe6dc] bg-white'}`}>
         <button onClick={() => setActiveTab('scanner')} className={`flex flex-col items-center gap-1 p-2 transition-all duration-200 hover:-translate-y-0.5 active:scale-90 ${activeTab === 'scanner' ? (isDark ? 'text-[#a8e8b8]' : 'text-[#318f54]') : isDark ? 'text-[#809388]' : 'text-[#9aa69c]'}`}><Camera size={22} /></button>
