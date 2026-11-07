@@ -13,8 +13,11 @@ export default function Home() {
   const [previewUrls, setPreviewUrls] = useState<string[]>([])
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [detectedItems, setDetectedItems] = useState<InventoryItem[]>([])
+  const [recipe, setRecipe] = useState<string | null>(null)
   const [isCameraOpen, setIsCameraOpen] = useState(false)
+  const [isAddMoreOpen, setIsAddMoreOpen] = useState(false)
   const [cameraError, setCameraError] = useState<string | null>(null)
+  const cameraModeRef = useRef<'append' | 'replace'>('append')
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
 
@@ -37,16 +40,20 @@ export default function Home() {
   const handleUpload = (e: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? [])
     if (files.length > 0) {
-      setImageFiles(files)
-      setPreviewUrls(files.map((file) => URL.createObjectURL(file)))
-      setDetectedItems([]) // Reset previous detections
+      setImageFiles((current) => [...current, ...files])
+      setPreviewUrls((current) => [...current, ...files.map((file) => URL.createObjectURL(file))])
+      setDetectedItems([])
+      setRecipe(null)
     }
+    e.target.value = ''
+    setIsAddMoreOpen(false)
   }
 
   const addImage = (file: File) => {
     setImageFiles((current) => [...current, file])
     setPreviewUrls((current) => [...current, URL.createObjectURL(file)])
     setDetectedItems([])
+    setRecipe(null)
   }
 
   const stopCamera = () => {
@@ -55,7 +62,8 @@ export default function Home() {
     setIsCameraOpen(false)
   }
 
-  const openCamera = async () => {
+  const openCamera = async (mode: 'append' | 'replace' = 'append') => {
+    cameraModeRef.current = mode
     setCameraError(null)
     if (!navigator.mediaDevices?.getUserMedia) {
       setCameraError('Camera access is not available in this browser.')
@@ -97,7 +105,14 @@ export default function Home() {
     canvas.toBlob((blob) => {
       if (!blob) return
       const file = new File([blob], `pantry-${Date.now()}.jpg`, { type: 'image/jpeg' })
-      addImage(file)
+      if (cameraModeRef.current === 'replace') {
+        setImageFiles((current) => [...current.slice(0, -1), file])
+        setPreviewUrls((current) => [...current.slice(0, -1), URL.createObjectURL(file)])
+        setDetectedItems([])
+        setRecipe(null)
+      } else {
+        addImage(file)
+      }
       stopCamera()
     }, 'image/jpeg', 0.92)
   }
@@ -119,12 +134,22 @@ export default function Home() {
       
       if (data.items) {
         setDetectedItems(data.items)
-        // Automatically add them to the global store for now
         data.items.forEach((item: InventoryItem) => addItem(item))
+
+        const recipeResponse = await fetch('/api/recipes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ inventory: data.items, filters: [] }),
+        })
+        const recipeData = await recipeResponse.json()
+        if (!recipeResponse.ok || !recipeData.recipe) {
+          throw new Error(recipeData.error || 'Recipe generation failed')
+        }
+        setRecipe(recipeData.recipe)
       }
     } catch (error) {
       console.error('Failed to analyze image', error)
-      alert('Analysis failed. Check console.')
+      alert(error instanceof Error ? error.message : 'Analysis failed. Check console.')
     } finally {
       setIsAnalyzing(false)
     }
@@ -134,6 +159,7 @@ export default function Home() {
     setImageFiles([])
     setPreviewUrls([])
     setDetectedItems([])
+    setRecipe(null)
   }
 
   return (
@@ -153,7 +179,7 @@ export default function Home() {
             {previewUrls.length === 0 ? (
               <div className="flex w-full flex-1 items-center justify-center">
                 <div className="flex w-full flex-col items-center gap-4">
-                  <button type="button" onClick={openCamera} className={`group flex w-full max-w-[360px] items-center justify-between border px-6 py-5 text-left transition-all duration-200 hover:-translate-y-1 active:translate-y-0 active:scale-[.99] ${isDark ? 'border-[#215a3a] bg-[#215a3a] text-white shadow-lg shadow-black/25 hover:bg-[#2b6f49]' : 'border-[#1f5d3d] bg-[#1f6b43] text-white shadow-lg shadow-[#1f5d3d]/20 hover:bg-[#28794d]'}`}>
+                  <button type="button" onClick={() => openCamera()} className={`group flex w-full max-w-[360px] items-center justify-between border px-6 py-5 text-left transition-all duration-200 hover:-translate-y-1 active:translate-y-0 active:scale-[.99] ${isDark ? 'border-[#215a3a] bg-[#215a3a] text-white shadow-lg shadow-black/25 hover:bg-[#2b6f49]' : 'border-[#1f5d3d] bg-[#1f6b43] text-white shadow-lg shadow-[#1f5d3d]/20 hover:bg-[#28794d]'}`}>
                     <span>
                       <span className="block text-lg font-semibold">Take a picture</span>
                     </span>
@@ -204,9 +230,12 @@ export default function Home() {
                   })}
                 </div>
                 
-                <div className="mt-5 flex w-full gap-3">
-                  <button onClick={clearImage} className={`flex-1 border py-4 font-semibold transition-all duration-200 active:scale-[.98] ${isDark ? 'border-[#347a4b] bg-[#202b24] text-[#a8e8b8] hover:bg-[#2b392f]' : 'border-[#b9dfc2] bg-white text-[#318f54] hover:bg-[#e4f5e8]'}`}>
-                    Retake
+                <div className="mt-5 grid w-full grid-cols-3 gap-2">
+                  <button type="button" onClick={() => openCamera('replace')} className={`border px-2 py-4 text-center text-sm font-semibold transition-all duration-200 hover:-translate-y-0.5 active:scale-[.98] ${isDark ? 'border-[#347a4b] bg-[#202b24] text-[#a8e8b8] hover:bg-[#2b392f]' : 'border-[#b9dfc2] bg-white text-[#318f54] hover:bg-[#e4f5e8]'}`}>
+                    Retake image
+                  </button>
+                  <button type="button" onClick={() => setIsAddMoreOpen(true)} className={`border px-2 py-4 text-center text-sm font-semibold transition-all duration-200 hover:-translate-y-0.5 active:scale-[.98] ${isDark ? 'border-[#347a4b] bg-[#202b24] text-[#a8e8b8] hover:bg-[#2b392f]' : 'border-[#b9dfc2] bg-white text-[#318f54] hover:bg-[#e4f5e8]'}`}>
+                    Add more
                   </button>
                   <button 
                     onClick={handleAnalyze} 
@@ -251,7 +280,7 @@ export default function Home() {
             <p className={`mb-5 text-sm ${isDark ? 'text-[#9caf9f]' : 'text-slate-500'}`}>Recipes</p>
             <div className={`border p-8 text-center shadow-sm ${isDark ? 'border-white/10 bg-[#202b24]' : 'border-slate-200 bg-white'}`}>
               <ChefHat size={38} className={`mx-auto mb-4 ${isDark ? 'text-[#9caf9f]' : 'text-slate-400'}`} />
-              <p className={`text-sm ${isDark ? 'text-[#9caf9f]' : 'text-slate-500'}`}>No recipes yet.</p>
+              {recipe ? <p className="whitespace-pre-wrap text-left text-sm leading-6">{recipe}</p> : <p className={`text-sm ${isDark ? 'text-[#9caf9f]' : 'text-slate-500'}`}>No recipes yet.</p>}
             </div>
           </div>
         )}
@@ -264,6 +293,25 @@ export default function Home() {
             <button type="button" onClick={takePhoto} aria-label="Take photo" disabled={!!cameraError} className="bg-white p-2 text-black disabled:opacity-40"><Circle size={34} fill="currentColor" strokeWidth={1.5} /></button>
           </div>
           {cameraError ? <p className="m-auto px-8 text-center text-sm text-zinc-300">{cameraError}</p> : <video ref={videoRef} autoPlay playsInline muted className="min-h-0 flex-1 object-cover" />}
+        </div>
+      )}
+      {isAddMoreOpen && (
+        <div className={`absolute inset-0 z-25 flex items-end ${isDark ? 'bg-black/60' : 'bg-[#1d2b24]/25'}`}>
+          <div className={`w-full border-t p-5 ${isDark ? 'border-white/10 bg-[#202b24]' : 'border-[#dfe6dc] bg-white'}`}>
+            <div className="mb-4 flex items-center justify-between">
+              <span className="font-semibold">Add another image</span>
+              <button type="button" onClick={() => setIsAddMoreOpen(false)} aria-label="Close add image options" className="p-1"><X size={19} /></button>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <button type="button" onClick={() => { setIsAddMoreOpen(false); openCamera('append') }} className={`border py-4 font-semibold ${isDark ? 'border-[#347a4b] bg-[#215a3a] text-white' : 'border-[#1f5d3d] bg-[#1f6b43] text-white'}`}>
+                Use camera
+              </button>
+              <label className={`flex cursor-pointer items-center justify-center border py-4 font-semibold ${isDark ? 'border-[#44bb78] bg-[#44bb78] text-[#102719]' : 'border-[#b9d1be] bg-[#f7faf6] text-[#1f6b43]'}`}>
+                Upload files
+                <input type="file" accept="image/*" multiple className="hidden" onChange={handleUpload} />
+              </label>
+            </div>
+          </div>
         </div>
       )}
       <nav className={`z-20 flex w-full shrink-0 items-center justify-around border-t px-6 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 transition-colors duration-300 ${isDark ? 'border-white/10 bg-[#202b24]' : 'border-[#dfe6dc] bg-white'}`}>
