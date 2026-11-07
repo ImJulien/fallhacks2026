@@ -28,13 +28,11 @@ export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const sidekickConstraintsRef = useRef<HTMLDivElement>(null)
-  const sidekickRef = useRef<HTMLDivElement>(null)
 
   // Recipe State
   const [recipe, setRecipe] = useState<Recipe | null>(null)
   const [isGeneratingRecipe, setIsGeneratingRecipe] = useState(false)
   const [isSidekickOpen, setIsSidekickOpen] = useState(false)
-  const [sidekickDrop, setSidekickDrop] = useState(0)
   const [recipeError, setRecipeError] = useState<string | null>(null)
   const [recipePreferences, setRecipePreferences] = useState<string[]>(['quick and easy'])
 
@@ -273,10 +271,6 @@ export default function Home() {
   }
 
   const toggleSidekick = () => {
-    if (!isSidekickOpen && sidekickRef.current) {
-      const top = sidekickRef.current.getBoundingClientRect().top
-      setSidekickDrop(Math.max(0, 180 - top))
-    }
     setIsSidekickOpen((open) => !open)
   }
 
@@ -529,21 +523,24 @@ export default function Home() {
 
       {!isCameraOpen && <div ref={sidekickConstraintsRef} className="pointer-events-none absolute inset-0 z-30">
         <motion.div
-          ref={sidekickRef}
           drag
           dragConstraints={sidekickConstraintsRef}
           dragMomentum={false}
           dragElastic={0.08}
-          animate={{ y: sidekickDrop }}
-          className="pointer-events-auto absolute bottom-16 right-3 flex flex-col items-end gap-2"
+          className="pointer-events-auto absolute bottom-[calc(4.5rem+env(safe-area-inset-bottom))] h-24 w-20"
+          style={{ left: 'calc(50% - 40px)' }}
         >
           {isSidekickOpen && (
-            <div className={`w-64 rounded-2xl border p-4 shadow-xl ${isDark ? 'border-[#347a4b]/60 bg-[#202b24]' : 'border-[#b9dfc2] bg-white'}`}>
+            <motion.div
+              initial={{ opacity: 0, scale: 0.92, y: 8 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              className={`absolute bottom-[calc(100%+0.5rem)] right-0 w-64 origin-bottom-right rounded-2xl border p-4 shadow-xl ${isDark ? 'border-[#347a4b]/60 bg-[#202b24]' : 'border-[#b9dfc2] bg-white'}`}
+              onPointerDown={(event) => event.stopPropagation()}
+            >
               <p className={`mb-3 text-sm leading-relaxed ${isDark ? 'text-[#d5e5d7]' : 'text-slate-600'}`}>{sidekickTip}</p>
               {items.length > 0 && (
                 <button
                   type="button"
-                  onPointerDown={(event) => event.stopPropagation()}
                   onClick={() => {
                     setActiveTab('chef')
                     setIsSidekickOpen(false)
@@ -554,7 +551,12 @@ export default function Home() {
                   {recipe ? 'Open recipe' : 'Make a recipe'}
                 </button>
               )}
-            </div>
+            </motion.div>
+          )}
+          {!isSidekickOpen && (
+            <span className={`absolute -top-7 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border px-2.5 py-1 text-[10px] font-bold shadow-sm ${isDark ? 'border-white/10 bg-[#202b24] text-[#a8e8b8]' : 'border-[#b9dfc2] bg-white text-[#318f54]'}`}>
+              Drag me • tap to chat
+            </span>
           )}
           <motion.button
             type="button"
