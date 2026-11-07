@@ -183,7 +183,7 @@ export default function Home() {
   const startEditing = (item: InventoryItem) => {
     setEditingId(item.id)
     setEditName(item.name)
-    setEditQuantity(item.quantity)
+    setEditQuantity(item.quantity || '')
   }
 
   const saveEdit = (id: string) => {
