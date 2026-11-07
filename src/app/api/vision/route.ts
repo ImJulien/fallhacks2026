@@ -13,14 +13,11 @@ export async function POST(req: NextRequest) {
     const genAI = new GoogleGenerativeAI(randomKey)
 
     const formData = await req.formData()
-    const file = formData.get('image') as File | null
+    const files = formData.getAll('image').filter((value): value is File => value instanceof File)
 
-    if (!file) {
+    if (files.length === 0) {
       return NextResponse.json({ error: 'No image provided' }, { status: 400 })
     }
-
-    const arrayBuffer = await file.arrayBuffer()
-    const base64Data = Buffer.from(arrayBuffer).toString('base64')
 
     const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' })
 
@@ -36,15 +33,17 @@ export async function POST(req: NextRequest) {
       Respond ONLY with the raw JSON array. Do not include markdown formatting like \`\`\`json.
     `
 
-    const result = await model.generateContent([
-      prompt,
-      {
+    const imageParts = await Promise.all(files.map(async (file) => {
+      const arrayBuffer = await file.arrayBuffer()
+      return {
         inlineData: {
-          data: base64Data,
+          data: Buffer.from(arrayBuffer).toString('base64'),
           mimeType: file.type,
         },
-      },
-    ])
+      }
+    }))
+
+    const result = await model.generateContent([prompt, ...imageParts])
 
     const responseText = result.response.text().replace(/```json/g, '').replace(/```/g, '').trim()
     const items = JSON.parse(responseText)
