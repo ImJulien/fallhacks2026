@@ -1,7 +1,7 @@
 'use client'
 
-import { useEffect, useRef, useState, type ChangeEvent } from 'react'
-import { Camera, List, ChefHat, Loader2, Upload, X, Circle, Moon, Sun, Sparkles, Trash2, Edit2, Check, Clock, Flame, Users } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { Camera, List, ChefHat, Loader2, Upload, X, Circle, Moon, Sun, Sparkles, Trash2, Edit2, Check, Clock, Flame, Users, ChevronDown, ChevronUp, Bookmark, DollarSign } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { useInventory, InventoryItem } from '@/store/useInventory'
 
@@ -10,8 +10,13 @@ interface Recipe {
   prepTime: string
   cookTime: string
   servings: string
+  priceEstimate?: string
   ingredients: string[]
   instructions: string[]
+}
+
+interface SavedRecipe extends Recipe {
+  id: string
 }
 
 export default function Home() {
@@ -35,11 +40,23 @@ export default function Home() {
 
   // Recipe State
   const [recipe, setRecipe] = useState<Recipe | null>(null)
+  const [savedRecipes, setSavedRecipes] = useState<SavedRecipe[]>(() => {
+    if (typeof window === 'undefined') return []
+    try {
+      return JSON.parse(window.localStorage.getItem('sous-saved-recipes') || '[]') as SavedRecipe[]
+    } catch {
+      return []
+    }
+  })
+  const [expandedRecipeIds, setExpandedRecipeIds] = useState<string[]>([])
   const [isGeneratingRecipe, setIsGeneratingRecipe] = useState(false)
   const [isSidekickOpen, setIsSidekickOpen] = useState(false)
   const [sidekickBubblePosition, setSidekickBubblePosition] = useState({ left: 12, top: 12 })
   const [recipeError, setRecipeError] = useState<string | null>(null)
   const [recipePreferences, setRecipePreferences] = useState<string[]>(['quick and easy'])
+  const [inventorySearch, setInventorySearch] = useState('')
+  const [inventoryFilter, setInventoryFilter] = useState('all')
+  const [inventorySort, setInventorySort] = useState<'recent' | 'name'>('recent')
 
   const recipeOptions = [
     { label: 'Quick & easy', value: 'quick and easy' },
@@ -48,6 +65,28 @@ export default function Home() {
     { label: 'Vegetarian', value: 'vegetarian' },
     { label: 'Budget-friendly', value: 'budget-friendly' },
   ]
+
+  const foodCategories = [
+    { label: 'All', value: 'all' },
+    { label: 'Produce', value: 'produce' },
+    { label: 'Dairy', value: 'dairy' },
+    { label: 'Meat', value: 'meat' },
+    { label: 'Pantry', value: 'pantry' },
+    { label: 'Frozen', value: 'frozen' },
+    { label: 'Drinks', value: 'drinks' },
+    { label: 'Other', value: 'other' },
+  ]
+
+  const getFoodCategory = (item: InventoryItem) => {
+    const name = `${item.name} ${item.brand || ''}`.toLowerCase()
+    if (/apple|banana|berry|broccoli|carrot|celery|fruit|garlic|grape|lettuce|onion|orange|pepper|potato|spinach|tomato|vegetable|avocado|lemon|lime|mushroom/.test(name)) return 'produce'
+    if (/cheese|cream|dairy|egg|milk|yogurt|butter|half.and.half/.test(name)) return 'dairy'
+    if (/beef|chicken|fish|meat|pork|salmon|sausage|shrimp|steak|turkey|tuna|bacon/.test(name)) return 'meat'
+    if (/frozen|ice cream|icecream/.test(name)) return 'frozen'
+    if (/juice|soda|water|coffee|tea|drink|wine|beer/.test(name)) return 'drinks'
+    if (/beans|bread|cereal|flour|grain|honey|noodle|oil|pasta|rice|sauce|soup|spice|sugar|vinegar|can |canned|jar/.test(name)) return 'pantry'
+    return 'other'
+  }
 
   // Inventory Edit State
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -64,6 +103,21 @@ export default function Home() {
   }
 
   const { items, addItem, removeItem, updateItem, clearInventory } = useInventory()
+
+  const visibleInventoryItems = useMemo(() => {
+    const query = inventorySearch.trim().toLowerCase()
+    return items
+      .filter((item) => {
+        const matchesSearch = !query || [item.name, item.brand, item.quantity]
+          .filter(Boolean)
+          .some((value) => value!.toLowerCase().includes(query))
+        const matchesFilter = inventoryFilter === 'all' || getFoodCategory(item) === inventoryFilter
+        return matchesSearch && matchesFilter
+      })
+      .sort((a, b) => inventorySort === 'name'
+        ? a.name.localeCompare(b.name)
+        : items.indexOf(b) - items.indexOf(a))
+  }, [inventoryFilter, inventorySearch, inventorySort, items])
 
   const updateSidekickBubblePosition = () => {
     const chef = sidekickRef.current
@@ -187,7 +241,7 @@ export default function Home() {
         
         await new Promise((resolve) => (img.onload = resolve))
 
-        const MAX_SIZE = 2200
+        const MAX_SIZE = 3000
         let width = img.width
         let height = img.height
         if (width > height && width > MAX_SIZE) {
@@ -205,7 +259,7 @@ export default function Home() {
         ctx?.drawImage(img, 0, 0, width, height)
 
         const compressedBlob = await new Promise<Blob | null>((resolve) => 
-          canvas.toBlob(resolve, 'image/jpeg', 0.98)
+          canvas.toBlob(resolve, 'image/jpeg', 0.99)
         )
 
         if (compressedBlob) {
@@ -283,13 +337,15 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           inventory: items, 
-          filters: recipePreferences
+          filters: recipePreferences,
+          savedRecipes: savedRecipes.map(({ title, ingredients }) => ({ title, ingredients }))
         }),
       })
       if (!res.ok) throw new Error('Recipe request failed')
       const data = await res.json()
       if (data.recipe) {
         setRecipe(data.recipe)
+        setExpandedRecipeIds(['current'])
       } else {
         throw new Error('Recipe response was empty')
       }
@@ -301,6 +357,26 @@ export default function Home() {
       setIsGeneratingRecipe(false)
     }
 
+  }
+
+  const persistSavedRecipes = (nextRecipes: SavedRecipe[]) => {
+    setSavedRecipes(nextRecipes)
+    window.localStorage.setItem('sous-saved-recipes', JSON.stringify(nextRecipes))
+  }
+
+  const saveRecipe = (recipeToSave: Recipe) => {
+    if (savedRecipes.some((saved) => saved.title === recipeToSave.title)) return
+    persistSavedRecipes([...savedRecipes, { ...recipeToSave, id: `${Date.now()}-${recipeToSave.title}` }])
+  }
+
+  const removeSavedRecipe = (id: string) => {
+    persistSavedRecipes(savedRecipes.filter((saved) => saved.id !== id))
+  }
+
+  const toggleRecipeExpanded = (id: string) => {
+    setExpandedRecipeIds((current) => current.includes(id)
+      ? current.filter((recipeId) => recipeId !== id)
+      : [...current, id])
   }
 
   const toggleRecipePreference = (value: string) => {
@@ -408,6 +484,46 @@ export default function Home() {
               </button>
             )}
             </div>
+
+            {items.length > 0 && (
+              <div className={`mb-5 rounded-2xl border p-3 ${isDark ? 'border-white/10 bg-[#202b24]' : 'border-slate-200 bg-white'}`}>
+                <div className="relative">
+                  <input
+                    type="search"
+                    value={inventorySearch}
+                    onChange={(event) => setInventorySearch(event.target.value)}
+                    placeholder="Search ingredients..."
+                    aria-label="Search inventory"
+                    className={`w-full rounded-xl border px-3 py-2.5 text-sm outline-none ${isDark ? 'border-white/15 bg-[#17201b] text-white placeholder:text-[#809388] focus:border-[#a8e8b8]' : 'border-slate-200 bg-slate-50 text-[#1d2b24] placeholder:text-slate-400 focus:border-[#318f54]'}`}
+                  />
+                </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto">
+                    {foodCategories.map((filter) => (
+                      <button
+                        type="button"
+                        key={filter.value}
+                        onClick={() => setInventoryFilter(filter.value)}
+                        className={`shrink-0 rounded-full px-2.5 py-1.5 text-[11px] font-semibold ${inventoryFilter === filter.value
+                          ? isDark ? 'bg-[#347a4b] text-white' : 'bg-[#e4f5e8] text-[#247c46]'
+                          : isDark ? 'text-[#9caf9f] hover:bg-white/10' : 'text-slate-500 hover:bg-slate-50'}`}
+                      >
+                        {filter.label}
+                      </button>
+                    ))}
+                  </div>
+                  <select
+                    value={inventorySort}
+                    onChange={(event) => setInventorySort(event.target.value as 'recent' | 'name')}
+                    aria-label="Sort inventory"
+                    className={`shrink-0 rounded-lg border px-2 py-1.5 text-[11px] font-semibold outline-none ${isDark ? 'border-white/15 bg-[#17201b] text-[#d5e5d7]' : 'border-slate-200 bg-white text-slate-600'}`}
+                  >
+                    <option value="recent">Recent</option>
+                    <option value="name">A-Z</option>
+                  </select>
+                </div>
+              </div>
+            )}
             
             {items.length === 0 ? (
               <div className={`rounded-2xl border border-dashed p-10 text-center text-sm ${isDark ? 'border-white/15 bg-[#202b24] text-[#9caf9f]' : 'border-slate-200 bg-white text-slate-400'}`}>
@@ -416,7 +532,7 @@ export default function Home() {
               </div>
             ) : (
               <div className="flex flex-col gap-3">
-                {items.map((item) => (
+                {visibleInventoryItems.map((item) => (
                   <div key={item.id} className={`flex items-center justify-between rounded-xl border p-4 shadow-sm transition-all ${isDark ? 'border-white/10 bg-[#202b24]' : 'border-slate-200 bg-white'}`}>
                     {editingId === item.id ? (
                       <div className="flex w-full flex-col gap-3">
@@ -440,6 +556,11 @@ export default function Home() {
                     )}
                   </div>
                 ))}
+                {visibleInventoryItems.length === 0 && (
+                  <div className={`rounded-2xl border border-dashed p-8 text-center text-sm ${isDark ? 'border-white/15 text-[#9caf9f]' : 'border-slate-200 text-slate-400'}`}>
+                    No matching ingredients found.
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -484,16 +605,22 @@ export default function Home() {
 
             {recipe ? (
               <div className={`overflow-hidden rounded-2xl border shadow-sm ${isDark ? 'border-white/10 bg-[#202b24]' : 'border-slate-200 bg-white'}`}>
-                <div className={`p-6 border-b ${isDark ? 'border-white/10 bg-[#1c261f]' : 'border-slate-100 bg-slate-50'}`}>
-                  <h3 className="text-xl font-bold leading-tight mb-4">{recipe.title}</h3>
-                  <div className="flex flex-wrap gap-4 text-sm">
+                <div className={`border-b ${isDark ? 'border-white/10 bg-[#1c261f]' : 'border-slate-100 bg-slate-50'}`}>
+                  <button type="button" onClick={() => toggleRecipeExpanded('current')} className="flex w-full items-center justify-between p-6 text-left">
+                    <h3 className="text-xl font-bold leading-tight">{recipe.title}</h3>
+                    {expandedRecipeIds.includes('current') ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+                  </button>
+                  <div className="flex flex-wrap gap-4 px-6 pb-6 text-sm">
                     <span className={`flex items-center gap-1.5 font-medium ${isDark ? 'text-[#a8e8b8]' : 'text-[#318f54]'}`}><Clock size={16}/> {recipe.prepTime}</span>
                     <span className={`flex items-center gap-1.5 font-medium ${isDark ? 'text-[#e8a8a8]' : 'text-orange-600'}`}><Flame size={16}/> {recipe.cookTime}</span>
                     <span className={`flex items-center gap-1.5 font-medium ${isDark ? 'text-[#9caf9f]' : 'text-slate-600'}`}><Users size={16}/> {recipe.servings}</span>
+                    <span className={`flex items-center gap-1.5 font-medium ${isDark ? 'text-[#a8e8b8]' : 'text-[#318f54]'}`}><DollarSign size={16}/> {recipe.priceEstimate || 'Estimate unavailable'}</span>
                   </div>
                 </div>
-                
-                <div className="p-6">
+                {expandedRecipeIds.includes('current') && <div className="p-6">
+                  <button type="button" onClick={() => saveRecipe(recipe)} disabled={savedRecipes.some((saved) => saved.title === recipe.title)} className={`mb-5 flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold disabled:opacity-50 ${isDark ? 'bg-[#347a4b] text-white' : 'bg-[#e4f5e8] text-[#247c46]'}`}>
+                    <Bookmark size={15} /> {savedRecipes.some((saved) => saved.title === recipe.title) ? 'Saved' : 'Save recipe'}
+                  </button>
                   <h4 className="font-bold mb-3 flex items-center gap-2"><List size={18}/> Ingredients</h4>
                   <ul className="mb-8 space-y-2">
                     {recipe.ingredients.map((ing, i) => (
@@ -513,7 +640,7 @@ export default function Home() {
                       </div>
                     ))}
                   </div>
-                </div>
+                </div>}
               </div>
             ) : (
               <div className={`rounded-2xl border p-10 text-center shadow-sm ${isDark ? 'border-white/10 bg-[#202b24]' : 'border-slate-200 bg-white'}`}>
@@ -522,6 +649,41 @@ export default function Home() {
                   {items.length === 0 ? "Scan ingredients first to generate a recipe." : "Tap above to see what Sous can make."}
                 </p>
               </div>
+            )}
+
+            {savedRecipes.length > 0 && (
+              <section className="mt-6">
+                <h3 className="mb-3 text-lg font-bold">Saved recipes</h3>
+                <div className="flex flex-col gap-3">
+                  {savedRecipes.map((saved) => {
+                    const expanded = expandedRecipeIds.includes(saved.id)
+                    return (
+                      <div key={saved.id} className={`overflow-hidden rounded-2xl border shadow-sm ${isDark ? 'border-white/10 bg-[#202b24]' : 'border-slate-200 bg-white'}`}>
+                        <button type="button" onClick={() => toggleRecipeExpanded(saved.id)} className="flex w-full items-center justify-between p-4 text-left">
+                          <div>
+                            <p className="font-bold">{saved.title}</p>
+                            <p className={`mt-1 text-xs ${isDark ? 'text-[#9caf9f]' : 'text-slate-500'}`}>{saved.priceEstimate || 'Cost estimate unavailable'} · {saved.cookTime}</p>
+                          </div>
+                          {expanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                        </button>
+                        {expanded && (
+                          <div className="border-t p-4">
+                            <button type="button" onClick={() => removeSavedRecipe(saved.id)} className="mb-4 flex items-center gap-1.5 text-xs font-semibold text-red-500"><Trash2 size={14} /> Remove saved recipe</button>
+                            <h4 className="mb-2 font-bold">Ingredients</h4>
+                            <ul className="mb-5 space-y-1.5">
+                              {saved.ingredients.map((ingredient, index) => <li key={index} className="text-sm">{ingredient}</li>)}
+                            </ul>
+                            <h4 className="mb-2 font-bold">Instructions</h4>
+                            <ol className="space-y-2">
+                              {saved.instructions.map((instruction, index) => <li key={index} className="flex gap-2 text-sm"><span className="font-bold text-[#318f54]">{index + 1}.</span><span>{instruction}</span></li>)}
+                            </ol>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </section>
             )}
           </div>
         )}
@@ -552,11 +714,15 @@ export default function Home() {
 
       {isCameraOpen && (
         <div className="absolute inset-0 z-30 flex flex-col bg-black">
-          <div className="flex items-center justify-between px-5 pb-4 pt-[max(1.25rem,env(safe-area-inset-top))]">
+          <div className="flex items-center px-5 pb-4 pt-[max(1.25rem,env(safe-area-inset-top))]">
             <button type="button" onClick={stopCamera} className="rounded-full bg-white/10 p-2 text-white hover:bg-white/20 transition-colors"><X size={20} /></button>
-            <button type="button" onClick={takePhoto} disabled={!!cameraError} className="rounded-full bg-white p-2 text-black disabled:opacity-40 hover:scale-105 transition-transform"><Circle size={34} fill="currentColor" strokeWidth={1.5} /></button>
           </div>
           {cameraError ? <p className="m-auto px-8 text-center text-sm text-zinc-300">{cameraError}</p> : <video ref={videoRef} autoPlay playsInline muted className="min-h-0 flex-1 object-cover" />}
+          <div className="flex shrink-0 justify-center px-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-5">
+            <button type="button" onClick={takePhoto} disabled={!!cameraError} aria-label="Take picture" className="rounded-full bg-white p-2 text-black shadow-lg shadow-black/40 transition-transform hover:scale-105 active:scale-95 disabled:opacity-40">
+              <Circle size={52} fill="currentColor" strokeWidth={1.5} />
+            </button>
+          </div>
         </div>
       )}
 
